@@ -27,7 +27,7 @@ export default function App() {
       </header>
 
       <main className="stage-wrap">
-        <TwinCanvas reading={reading} twinRef={twinRef} />
+        <TwinCanvas reading={reading} status={status} twinRef={twinRef} />
         {variant === 'server' && (
           <div className="variant-note">
             Server view shows board specs — switch to <strong>Pi + Enviro HAT</strong> for live telemetry.

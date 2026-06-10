@@ -1,4 +1,4 @@
-import { useState, type MutableRefObject } from 'react';
+import { useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import type { TwinHandle, TwinVariant } from '../twin/twin';
 
 interface ControlsProps {
@@ -18,14 +18,14 @@ export function Controls({ twinRef, variant, onVariantChange }: ControlsProps) {
     onVariantChange(v);
   };
 
-  const toggle = (
-    fn: (on: boolean) => void,
-    value: boolean,
-    setter: (v: boolean) => void
-  ) => {
-    const next = !value;
-    setter(next);
-    fn(next);
+  // functional update so two clicks in the same tick can't both read the same
+  // stale closure value
+  const toggle = (fn: (on: boolean) => void, setter: Dispatch<SetStateAction<boolean>>) => {
+    setter((prev) => {
+      const next = !prev;
+      fn(next);
+      return next;
+    });
   };
 
   return (
@@ -52,25 +52,25 @@ export function Controls({ twinRef, variant, onVariantChange }: ControlsProps) {
       <div className="ctrl-group">
         <button
           className={wire ? 'ctrl active' : 'ctrl'}
-          onClick={() => toggle((on) => twinRef.current?.setWire(on), wire, setWire)}
+          onClick={() => toggle((on) => twinRef.current?.setWire(on), setWire)}
         >
           Wireframe
         </button>
         <button
           className={flow ? 'ctrl active' : 'ctrl'}
-          onClick={() => toggle((on) => twinRef.current?.setFlow(on), flow, setFlow)}
+          onClick={() => toggle((on) => twinRef.current?.setFlow(on), setFlow)}
         >
           Data flow
         </button>
         <button
           className={hud ? 'ctrl active' : 'ctrl'}
-          onClick={() => toggle((on) => twinRef.current?.setHUD(on), hud, setHud)}
+          onClick={() => toggle((on) => twinRef.current?.setHUD(on), setHud)}
         >
           Labels
         </button>
         <button
           className={rotate ? 'ctrl active' : 'ctrl'}
-          onClick={() => toggle((on) => twinRef.current?.setAutoRotate(on), rotate, setRotate)}
+          onClick={() => toggle((on) => twinRef.current?.setAutoRotate(on), setRotate)}
         >
           Auto-rotate
         </button>

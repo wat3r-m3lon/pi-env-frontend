@@ -14,27 +14,45 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const PCB_W = 8.56; // x  (real Pi5 is 85.6mm)
 const PCB_D = 5.65; // z  (56.5mm)
 const PCB_H = 0.16; // y  (1.6mm thick)
 
+// Seeded PRNG (mulberry32) for decorative part placement. build() reruns on
+// every wireframe/variant toggle — unseeded randomness would teleport the caps
+// on each toggle instead of keeping the board identical across rebuilds.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 // === material palette ===
+// envMapIntensity is deliberately split by material class: metals read as metal
+// only when they reflect the environment strongly, while PCB/plastic parts get
+// a uniform white sheen from the same env map and turn toy-like — so they are
+// dialed way down.
 function pal() {
   return {
-    pcb: new THREE.MeshStandardMaterial({ color: 0x1f4d2b, roughness: 0.7, metalness: 0.05 }),
-    pcbTrace: new THREE.MeshStandardMaterial({ color: 0xb8a04a, roughness: 0.4, metalness: 0.5 }),
-    soc: new THREE.MeshStandardMaterial({ color: 0x0e0e10, roughness: 0.45, metalness: 0.3 }),
-    chip: new THREE.MeshStandardMaterial({ color: 0x1a1a1d, roughness: 0.5, metalness: 0.2 }),
-    silver: new THREE.MeshStandardMaterial({ color: 0xb8bcc4, roughness: 0.35, metalness: 0.85 }),
-    silverDull: new THREE.MeshStandardMaterial({ color: 0x8d9097, roughness: 0.55, metalness: 0.6 }),
-    gold: new THREE.MeshStandardMaterial({ color: 0xd9b774, roughness: 0.35, metalness: 0.85 }),
-    usbBlue: new THREE.MeshStandardMaterial({ color: 0x0c2d52, roughness: 0.5, metalness: 0.2 }),
-    cap: new THREE.MeshStandardMaterial({ color: 0xc8a85a, roughness: 0.4, metalness: 0.5 }),
-    capBlack: new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.45, metalness: 0.2 }),
-    white: new THREE.MeshStandardMaterial({ color: 0xeaeaea, roughness: 0.6, metalness: 0.1 }),
-    ledRed: new THREE.MeshStandardMaterial({ color: 0x661010, roughness: 0.3, metalness: 0.1, emissive: 0xff2020, emissiveIntensity: 1.6 }),
-    ledGreen: new THREE.MeshStandardMaterial({ color: 0x0c4a1c, roughness: 0.3, metalness: 0.1, emissive: 0x44ff66, emissiveIntensity: 1.2 }),
+    pcb: new THREE.MeshStandardMaterial({ color: 0x1f4d2b, roughness: 0.7, metalness: 0.05, envMapIntensity: 0.3 }),
+    pcbTrace: new THREE.MeshStandardMaterial({ color: 0xb8a04a, roughness: 0.4, metalness: 0.5, envMapIntensity: 0.8 }),
+    soc: new THREE.MeshStandardMaterial({ color: 0x0e0e10, roughness: 0.45, metalness: 0.3, envMapIntensity: 0.6 }),
+    chip: new THREE.MeshStandardMaterial({ color: 0x1a1a1d, roughness: 0.5, metalness: 0.2, envMapIntensity: 0.5 }),
+    silver: new THREE.MeshStandardMaterial({ color: 0xb8bcc4, roughness: 0.22, metalness: 0.95, envMapIntensity: 1.1 }),
+    silverDull: new THREE.MeshStandardMaterial({ color: 0x8d9097, roughness: 0.4, metalness: 0.8, envMapIntensity: 0.9 }),
+    gold: new THREE.MeshStandardMaterial({ color: 0xd9b774, roughness: 0.28, metalness: 0.95, envMapIntensity: 1.1 }),
+    usbBlue: new THREE.MeshStandardMaterial({ color: 0x0c2d52, roughness: 0.5, metalness: 0.2, envMapIntensity: 0.45 }),
+    cap: new THREE.MeshStandardMaterial({ color: 0xc8a85a, roughness: 0.4, metalness: 0.5, envMapIntensity: 0.6 }),
+    capBlack: new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.45, metalness: 0.2, envMapIntensity: 0.5 }),
+    white: new THREE.MeshStandardMaterial({ color: 0xeaeaea, roughness: 0.6, metalness: 0.1, envMapIntensity: 0.45 }),
+    ledRed: new THREE.MeshStandardMaterial({ color: 0x661010, roughness: 0.3, metalness: 0.1, emissive: 0xff2020, emissiveIntensity: 1.6, envMapIntensity: 0.3 }),
+    ledGreen: new THREE.MeshStandardMaterial({ color: 0x0c4a1c, roughness: 0.3, metalness: 0.1, emissive: 0x44ff66, emissiveIntensity: 1.2, envMapIntensity: 0.3 }),
   };
 }
 
@@ -121,11 +139,15 @@ function makeHUDLabel(text, color = '#a3f3a3') {
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
 
+  let current = text;
+  let dimmed = false;
+
   function draw(value) {
+    const ink = dimmed ? '#79827b' : color;
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = 'rgba(10, 14, 12, 0.85)';
     ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = color;
+    ctx.strokeStyle = ink;
     ctx.lineWidth = 1;
     ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
     // corner brackets
@@ -137,13 +159,13 @@ function makeHUDLabel(text, color = '#a3f3a3') {
     ctx.moveTo(c, h); ctx.lineTo(0, h); ctx.lineTo(0, h - c);
     ctx.lineWidth = 2;
     ctx.stroke();
-    ctx.fillStyle = color;
+    ctx.fillStyle = ink;
     ctx.font = '700 24px JetBrains Mono, monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(value, w / 2, h / 2);
   }
-  draw(text);
+  draw(current);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -154,7 +176,15 @@ function makeHUDLabel(text, color = '#a3f3a3') {
   return {
     sprite,
     setText(value) {
-      draw(value);
+      current = value;
+      draw(current);
+      tex.needsUpdate = true;
+    },
+    // stale telemetry renders gray so the 3D side doesn't pretend to be live
+    setDim(on) {
+      if (dimmed === !!on) return;
+      dimmed = !!on;
+      draw(current);
       tex.needsUpdate = true;
     },
   };
@@ -254,7 +284,7 @@ function makePi5(palette, opts = {}) {
   const u1blue = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.5, 1.2), palette.usbBlue);
   u1blue.position.set(0.05, 0.35, 0);
   usbA.add(u1blue);
-  usbA.position.set(PCB_W / 2 - 0.85, topY, -PCB_D / 2 + 1.1);
+  usbA.position.set(PCB_W / 2 - 0.85, topY, -PCB_D / 2 + 2.7);
   usbA.userData.label = 'USB 3.0 (×2)';
   usbA.userData.click = 'usb3';
   root.add(usbA);
@@ -267,7 +297,7 @@ function makePi5(palette, opts = {}) {
   const u2black = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.5, 1.2), palette.capBlack);
   u2black.position.set(0.05, 0.35, 0);
   usbB.add(u2black);
-  usbB.position.set(PCB_W / 2 - 0.85, topY, -PCB_D / 2 + 2.7);
+  usbB.position.set(PCB_W / 2 - 0.85, topY, -PCB_D / 2 + 1.1);
   usbB.userData.label = 'USB 2.0 (×2)';
   usbB.userData.click = 'usb2';
   root.add(usbB);
@@ -281,21 +311,24 @@ function makePi5(palette, opts = {}) {
   const ethSlot = new THREE.Mesh(new THREE.BoxGeometry(1.45, 0.8, 1.2), palette.capBlack);
   ethSlot.position.set(PCB_W / 2 - 0.78, topY + 0.55, -PCB_D / 2 + 4.4);
   root.add(ethSlot);
-  const ethLed1 = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.1, 0.18), palette.ledGreen);
+  // the blink loop writes emissiveIntensity per mesh — every blinking LED needs
+  // its own material instance, or they all end up pulsing in lockstep
+  const ethLed1 = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.1, 0.18), palette.ledGreen.clone());
   ethLed1.position.set(PCB_W / 2 - 0.05, topY + 1.05, -PCB_D / 2 + 4.0);
   ethLed1.userData.blink = 'eth-link';
   root.add(ethLed1);
 
   // USB-C power
-  const usbc = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.45, 0.5), palette.silver);
-  usbc.position.set(-PCB_W / 2 + 0.45, topY + 0.22, PCB_D / 2 - 0.55);
+  // on the real Pi 5, USB-C + both micro-HDMIs sit on the long edge, ports facing out
+  const usbc = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.45, 0.9), palette.silver);
+  usbc.position.set(-3.16, topY + 0.22, PCB_D / 2 - 0.25);
   usbc.userData.label = 'USB-C POWER · 5V/5A';
   usbc.userData.click = 'power';
   root.add(usbc);
 
   for (let i = 0; i < 2; i++) {
-    const hdmi = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.4, 0.7), palette.silver);
-    hdmi.position.set(-PCB_W / 2 + 0.42, topY + 0.2, PCB_D / 2 - 1.6 - i * 1.0);
+    const hdmi = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.4, 0.85), palette.silver);
+    hdmi.position.set(-1.7 + i * 1.34, topY + 0.2, PCB_D / 2 - 0.25);
     hdmi.userData.label = `MICRO HDMI ${i + 1} · 4K@60`;
     hdmi.userData.click = 'hdmi';
     root.add(hdmi);
@@ -323,27 +356,28 @@ function makePi5(palette, opts = {}) {
   gpio.userData.click = 'gpio';
   root.add(gpio);
 
+  const rand = mulberry32(0x5eed);
   for (let i = 0; i < 18; i++) {
-    const w = 0.06 + Math.random() * 0.1;
-    const cap = new THREE.Mesh(new THREE.BoxGeometry(w, 0.05, w * 0.5), Math.random() > 0.5 ? palette.cap : palette.capBlack);
-    cap.position.set((Math.random() - 0.5) * (PCB_W - 1.5), topY + 0.025, (Math.random() - 0.5) * (PCB_D - 1.5));
-    cap.rotation.y = Math.random() * Math.PI;
+    const w = 0.06 + rand() * 0.1;
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(w, 0.05, w * 0.5), rand() > 0.5 ? palette.cap : palette.capBlack);
+    cap.position.set((rand() - 0.5) * (PCB_W - 1.5), topY + 0.025, (rand() - 0.5) * (PCB_D - 1.5));
+    cap.rotation.y = rand() * Math.PI;
     root.add(cap);
   }
 
-  const pwrLed = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.06, 0.1), palette.ledRed);
+  const pwrLed = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.06, 0.1), palette.ledRed.clone());
   pwrLed.position.set(-PCB_W / 2 + 0.5, topY + 0.05, -PCB_D / 2 + 1.1);
   pwrLed.userData.blink = 'pwr';
   pwrLed.userData.label = 'PWR LED';
   root.add(pwrLed);
-  const actLed = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.06, 0.1), palette.ledGreen);
+  const actLed = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.06, 0.1), palette.ledGreen.clone());
   actLed.position.set(-PCB_W / 2 + 0.5, topY + 0.05, -PCB_D / 2 + 1.4);
   actLed.userData.blink = 'act';
   actLed.userData.label = 'ACT LED';
   root.add(actLed);
 
   const sd = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.18, 1.6), palette.silverDull);
-  sd.position.set(PCB_W / 2 - 0.7, -PCB_H / 2 - 0.09, 0);
+  sd.position.set(-(PCB_W / 2 - 0.6), -PCB_H / 2 - 0.09, 0);
   sd.userData.label = 'MICROSD SLOT';
   sd.userData.click = 'sd';
   root.add(sd);
@@ -380,24 +414,48 @@ function setupScene(canvas) {
   renderer.setClearColor(0x000000, 0);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = 0.9;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   const scene = new THREE.Scene();
+
+  // PBR metals have no diffuse term — without an environment to reflect, the
+  // high-metalness ports/pins render as near-black plastic under plain lights.
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+  pmrem.dispose();
+
   const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
   camera.position.set(8, 7, 9);
   camera.lookAt(0, 0, 0);
 
-  const amb = new THREE.AmbientLight(0xffffff, 0.45);
+  const amb = new THREE.AmbientLight(0xffffff, 0.15);
   scene.add(amb);
   const key = new THREE.DirectionalLight(0xffffff, 1.0);
   key.position.set(6, 10, 4);
+  key.castShadow = true;
+  key.shadow.mapSize.set(1024, 1024);
+  key.shadow.camera.left = -7;
+  key.shadow.camera.right = 7;
+  key.shadow.camera.top = 7;
+  key.shadow.camera.bottom = -7;
+  key.shadow.camera.near = 1;
+  key.shadow.camera.far = 30;
+  // the board has 0.003-thick silkscreen slivers — normalBias keeps them from self-shadow acne
+  key.shadow.normalBias = 0.02;
   scene.add(key);
   const fill = new THREE.DirectionalLight(0x88ddff, 0.35);
   fill.position.set(-8, 4, -4);
   scene.add(fill);
-  const accent = new THREE.PointLight(0x66ff99, 0.8, 18);
-  accent.position.set(0, 4, 0);
-  scene.add(accent);
+
+  // shadow catcher — ShadowMaterial renders nothing but the received shadow,
+  // so the transparent canvas keeps compositing over the page background
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.ShadowMaterial({ opacity: 0.28 }));
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -1.35;
+  ground.receiveShadow = true;
+  scene.add(ground);
 
   function resize() {
     const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -423,8 +481,9 @@ function makeEnviroHAT(palette, opts = {}) {
   const wireframe = !!opts.wireframe;
   const root = new THREE.Group();
   root.userData.label = 'PIMORONI ENVIRO · INDOOR HAT';
+  const rand = mulberry32(0xeed5);
 
-  const pcbHat = new THREE.MeshStandardMaterial({ color: 0x1d5fc4, roughness: 0.55, metalness: 0.1 });
+  const pcbHat = new THREE.MeshStandardMaterial({ color: 0x1d5fc4, roughness: 0.55, metalness: 0.1, envMapIntensity: 0.35 });
   const pcb = new THREE.Mesh(new THREE.BoxGeometry(HAT_W, HAT_H, HAT_D), pcbHat);
   root.add(pcb);
 
@@ -447,14 +506,16 @@ function makeEnviroHAT(palette, opts = {}) {
     root.add(ring);
   }
 
+  // female header sits on the HAT's back long edge so it hangs directly above
+  // the Pi's GPIO pins once the HAT is mounted (world z ≈ -2.35)
   const femHeader = new THREE.Mesh(new THREE.BoxGeometry(20 * 0.18 + 0.2, 0.7, 0.55), palette.capBlack);
-  femHeader.position.set(0.5, -HAT_H / 2 - 0.35, HAT_D / 2 - 0.6);
+  femHeader.position.set(0.5, -HAT_H / 2 - 0.35, -(HAT_D / 2 - 0.45));
   femHeader.userData.label = '40-PIN FEMALE HEADER';
   femHeader.userData.click = 'header';
   root.add(femHeader);
   for (let i = 0; i < 20; i++) {
     const dot = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.02, 0.05), palette.gold);
-    dot.position.set(0.5 - 1.8 + i * 0.18, -HAT_H / 2 - 0.02, HAT_D / 2 - 0.6);
+    dot.position.set(0.5 - 1.8 + i * 0.18, -HAT_H / 2 - 0.02, -(HAT_D / 2 - 0.45));
     root.add(dot);
   }
 
@@ -469,7 +530,7 @@ function makeEnviroHAT(palette, opts = {}) {
   root.add(screen);
   const lineMat = new THREE.MeshStandardMaterial({ color: 0xe9fff8, emissive: 0xe9fff8, emissiveIntensity: 1.6 });
   for (let i = 0; i < 4; i++) {
-    const w = 0.5 + Math.random() * 1.2;
+    const w = 0.5 + rand() * 1.2;
     const ln = new THREE.Mesh(new THREE.BoxGeometry(w, 0.002, 0.06), lineMat);
     ln.position.set(-1.4 - 1.0 + w / 2 + 0.15, HAT_H / 2 + 0.14, 0.2 - 0.35 + i * 0.18);
     root.add(ln);
@@ -477,8 +538,8 @@ function makeEnviroHAT(palette, opts = {}) {
 
   const bme = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.1, 0.42), palette.chip);
   bme.position.set(1.5, HAT_H / 2 + 0.05, -0.5);
-  bme.userData.label = 'BME688 · TEMP / HUM / PRES / GAS';
-  bme.userData.click = 'bme688';
+  bme.userData.label = 'BME280 · TEMP / HUM / PRES';
+  bme.userData.click = 'bme280';
   root.add(bme);
   const bmeHole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.04, 16), palette.silver);
   bmeHole.position.set(1.5, HAT_H / 2 + 0.115, -0.5);
@@ -505,28 +566,19 @@ function makeEnviroHAT(palette, opts = {}) {
   micPort.position.set(1.5, HAT_H / 2 + 0.085, 0.5);
   root.add(micPort);
 
-  const btnPos = [
-    [-HAT_W / 2 + 0.5, -HAT_D / 2 + 0.6, 'A'],
-    [-HAT_W / 2 + 0.5, HAT_D / 2 - 0.6, 'B'],
-    [HAT_W / 2 - 0.5, -HAT_D / 2 + 0.6, 'X'],
-    [HAT_W / 2 - 0.5, HAT_D / 2 - 0.6, 'Y'],
-  ];
-  for (const [x, z, name] of btnPos) {
-    const base = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.1, 0.36), palette.silverDull);
-    base.position.set(x, HAT_H / 2 + 0.05, z);
-    base.userData.label = `BUTTON ${name}`;
-    base.userData.click = 'btn';
-    root.add(base);
-    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.06, 16), palette.capBlack);
-    cap.position.set(x, HAT_H / 2 + 0.12, z);
-    root.add(cap);
-  }
+  // sensor positions exposed so build() can anchor the data-flow curves on them
+  root.userData.anchors = {
+    bme: bme.position,
+    ltr: ltr.position,
+    mic: micBody.position,
+    lcd: screen.position,
+  };
 
   for (let i = 0; i < 10; i++) {
-    const w = 0.05 + Math.random() * 0.07;
-    const cap = new THREE.Mesh(new THREE.BoxGeometry(w, 0.04, w * 0.5), Math.random() > 0.5 ? palette.cap : palette.capBlack);
-    cap.position.set((Math.random() - 0.5) * (HAT_W - 1.5), HAT_H / 2 + 0.02, (Math.random() - 0.5) * (HAT_D - 1.5));
-    cap.rotation.y = Math.random() * Math.PI;
+    const w = 0.05 + rand() * 0.07;
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(w, 0.04, w * 0.5), rand() > 0.5 ? palette.cap : palette.capBlack);
+    cap.position.set((rand() - 0.5) * (HAT_W - 1.5), HAT_H / 2 + 0.02, (rand() - 0.5) * (HAT_D - 1.5));
+    cap.rotation.y = rand() * Math.PI;
     root.add(cap);
   }
 
@@ -548,16 +600,27 @@ function makeEnviroHAT(palette, opts = {}) {
   return root;
 }
 
-const ENVIRO_FLOWS = [
-  { color: 0x9cf3a8, points: [[3.6, 1.5, -2.0], [2.0, 1.5, -2.0], [0.0, 0.5, -1.2], [-0.4, 0.42, -0.2]], speed: 0.9, count: 4, label: 'I²C BME' },
-  { color: 0xffe66c, points: [[4.5, 1.5, -2.0], [2.4, 1.5, -2.0], [0.4, 0.5, -1.2], [-0.4, 0.42, -0.2]], speed: 0.8, count: 3, label: 'I²C LIGHT' },
-  { color: 0xff7ac6, points: [[3.6, 1.5, -1.0], [1.8, 1.5, -0.6], [0.2, 0.42, -0.3], [-0.4, 0.42, -0.2]], speed: 1.3, count: 5, label: 'I²S MIC' },
-  { color: 0x6cc5ff, points: [[-0.4, 0.42, -0.2], [-0.8, 0.6, -1.0], [-1.4, 1.4, -0.8], [-1.4, 1.55, 0.0]], speed: 1.1, count: 4, label: 'SPI LCD' },
-];
+// Data-flow curves anchored on the actual sensor meshes: `a` maps sensor key →
+// board-space Vector3, computed in build() from the HAT mount offset so the
+// curves stay attached to the chips even if the HAT mount ever moves.
+function enviroFlowDefs(a) {
+  const soc = [-0.4, 0.42, -0.2];
+  const arc = (from, to, lift) => [
+    [from.x, from.y, from.z],
+    [(from.x + to[0]) / 2, Math.max(from.y, to[1]) + lift, (from.z + to[2]) / 2],
+    to,
+  ];
+  return [
+    { color: 0x9cf3a8, points: arc(a.bme, soc, 0.45), speed: 0.9, count: 4, label: 'I²C BME' },
+    { color: 0xffe66c, points: arc(a.ltr, soc, 0.6), speed: 0.8, count: 3, label: 'I²C LIGHT' },
+    { color: 0xff7ac6, points: arc(a.mic, soc, 0.35), speed: 1.3, count: 5, label: 'I²S MIC' },
+    { color: 0x6cc5ff, points: [soc, [(soc[0] + a.lcd.x) / 2, a.lcd.y + 0.55, (soc[2] + a.lcd.z) / 2], [a.lcd.x, a.lcd.y, a.lcd.z]], speed: 1.1, count: 4, label: 'SPI LCD' },
+  ];
+}
 
-function addEnviroFlow(parent) {
+function addEnviroFlow(parent, anchors) {
   const flows = [];
-  for (const p of ENVIRO_FLOWS) {
+  for (const p of enviroFlowDefs(anchors)) {
     const curve = new THREE.CatmullRomCurve3(p.points.map((c) => new THREE.Vector3(...c)));
     const mats = makeFlowMaterials(p.color);
     const linePoints = curve.getPoints(80);
@@ -582,12 +645,15 @@ function addEnviroFlow(parent) {
 // enviro telemetry labels — ORDER MATTERS, it maps to reading fields in
 // formatTelemetry(): [0] temp, [1] humidity, [2] light, [3] noise, [4] pressure.
 function addEnviroHUDLabels(parent) {
+  // each label floats near its sensor: temp/hum/pres stack over the BME280,
+  // light over the LTR-559, noise over the mic. Vertical gaps ≥0.55 (sprite
+  // height 0.38) so the billboards don't collide at typical orbit angles.
   const items = [
-    { text: '—', pos: [1.5, 2.3, -2.4], color: '#a3f3a3' }, // temperatureC
-    { text: '—', pos: [1.5, 2.7, -2.4], color: '#a3f3a3' }, // humidityPct
-    { text: '—', pos: [3.4, 2.3, -2.4], color: '#ffe66c' }, // lightLux
-    { text: '—', pos: [3.4, 2.7, -1.0], color: '#ff7ac6' }, // noiseLevel
-    { text: '—', pos: [-0.2, 2.7, -2.4], color: '#a3f3a3' }, // pressureHpa
+    { text: 'TEMP —', pos: [-0.4, 2.2, -1.8], color: '#a3f3a3' }, // temperatureC
+    { text: 'HUM —', pos: [-0.4, 2.75, -1.8], color: '#6cc5ff' }, // humidityPct
+    { text: 'LIGHT —', pos: [1.5, 2.2, -1.8], color: '#ffe66c' }, // lightLux
+    { text: 'NOISE —', pos: [1.5, 2.75, -0.8], color: '#ff7ac6' }, // noiseLevel
+    { text: 'PRES —', pos: [-0.4, 3.3, -1.8], color: '#c9a3ff' }, // pressureHpa
   ];
   const labels = [];
   for (const it of items) {
@@ -605,17 +671,18 @@ function formatTelemetry(reading) {
   const r = reading || {};
   const num = (v) => typeof v === 'number' && Number.isFinite(v);
   return [
-    num(r.temperatureC) ? `${r.temperatureC.toFixed(1)}°C` : '—',
-    num(r.humidityPct) ? `${Math.round(r.humidityPct)}% RH` : '—',
-    num(r.lightLux) ? `${Math.round(r.lightLux)} LUX` : '—',
-    num(r.noiseLevel) ? `${r.noiseLevel.toFixed(2)}` : '—',
-    num(r.pressureHpa) ? `${Math.round(r.pressureHpa)} HPA` : '—',
+    num(r.temperatureC) ? `TEMP ${r.temperatureC.toFixed(1)}°C` : 'TEMP —',
+    num(r.humidityPct) ? `HUM ${Math.round(r.humidityPct)}% RH` : 'HUM —',
+    num(r.lightLux) ? `LIGHT ${Math.round(r.lightLux)} LUX` : 'LIGHT —',
+    num(r.noiseLevel) ? `NOISE ${r.noiseLevel.toFixed(2)}` : 'NOISE —',
+    num(r.pressureHpa) ? `PRES ${Math.round(r.pressureHpa)} HPA` : 'PRES —',
   ];
 }
 
 // === public factory ===
 export function initTwin(canvas, opts = {}) {
   const palette = pal();
+  const sharedMats = new Set(Object.values(palette));
   const { renderer, scene, camera, ro } = setupScene(canvas);
 
   const state = {
@@ -624,6 +691,7 @@ export function initTwin(canvas, opts = {}) {
     flow: opts.flow !== false,
     hud: opts.hud !== false,
     rotate: opts.autoRotate !== false,
+    stale: false,
   };
 
   let board = null;
@@ -631,11 +699,35 @@ export function initTwin(canvas, opts = {}) {
   let hudLabels = []; // current label handles ({ sprite, setText })
   let lastReading = null; // replayed onto enviro HUD after each rebuild
 
+  function enableShadows(group) {
+    group.traverse((o) => {
+      if (o.isMesh) {
+        o.castShadow = true;
+        o.receiveShadow = true;
+      }
+    });
+  }
+
+  // dots hide when the user toggles flow off OR the stream goes stale — a
+  // "data is flowing" animation over a dead stream would be lying
+  function syncFlowVisibility() {
+    const visible = state.flow && !state.stale;
+    flows.forEach((f) => f.dots.forEach((d) => (d.mesh.visible = visible)));
+  }
+
   function disposeBoard() {
     if (!board) return;
     scene.remove(board);
     board.traverse((o) => {
       if (o.geometry) o.geometry.dispose();
+      // per-build materials (wireframe clones, HUD/halo canvas textures, flow
+      // and HAT-local mats) die with the board; only the shared palette survives
+      const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+      for (const m of mats) {
+        if (sharedMats.has(m)) continue;
+        if (m.map) m.map.dispose();
+        m.dispose();
+      }
     });
   }
 
@@ -646,20 +738,27 @@ export function initTwin(canvas, opts = {}) {
 
     const pi = makePi5(palette, { wireframe: state.wire });
     board.add(pi);
+    enableShadows(pi);
 
     if (state.variant === 'enviro') {
       const hat = makeEnviroHAT(palette, { wireframe: state.wire });
       hat.position.set(-1.67, HAT_LIFT, -1.3);
       board.add(hat);
-      flows = addEnviroFlow(board);
+      enableShadows(hat);
+      const anchors = {};
+      for (const [k, p] of Object.entries(hat.userData.anchors)) {
+        anchors[k] = p.clone().add(hat.position);
+      }
+      flows = addEnviroFlow(board, anchors);
       hudLabels = addEnviroHUDLabels(board);
     } else {
       flows = addDataFlow(board);
       hudLabels = addHUDLabels(board);
     }
 
-    flows.forEach((f) => f.dots.forEach((d) => (d.mesh.visible = state.flow)));
+    syncFlowVisibility();
     hudLabels.forEach((l) => (l.sprite.visible = state.hud));
+    if (state.variant === 'enviro') hudLabels.forEach((l) => l.setDim(state.stale));
 
     scene.add(board);
 
@@ -773,7 +872,12 @@ export function initTwin(canvas, opts = {}) {
     },
     setFlow(on) {
       state.flow = !!on;
-      flows.forEach((f) => f.dots.forEach((d) => (d.mesh.visible = state.flow)));
+      syncFlowVisibility();
+    },
+    setStale(on) {
+      state.stale = !!on;
+      if (state.variant === 'enviro') hudLabels.forEach((l) => l.setDim(state.stale));
+      syncFlowVisibility();
     },
     setHUD(on) {
       state.hud = !!on;
@@ -800,6 +904,11 @@ export function initTwin(canvas, opts = {}) {
       canvas.removeEventListener('click', onClick);
       controls.dispose();
       disposeBoard();
+      sharedMats.forEach((m) => m.dispose());
+      if (scene.environment) {
+        scene.environment.dispose();
+        scene.environment = null;
+      }
       renderer.dispose();
     },
   };

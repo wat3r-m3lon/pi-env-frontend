@@ -20,6 +20,8 @@ export interface TwinHandle {
   setVariant(v: TwinVariant): void;
   setWire(on: boolean): void;
   setFlow(on: boolean): void;
+  /** Dim the telemetry HUD and pause flow dots while the stream is stale/error/offline. */
+  setStale(on: boolean): void;
   setHUD(on: boolean): void;
   setAutoRotate(on: boolean): void;
   reset(): void;

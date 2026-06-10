@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { initTwin } from '../twin/twin.js';
 import type { TwinHandle } from '../twin/twin';
-import type { Reading } from '../types';
+import type { ConnectionStatus, Reading } from '../types';
 
 interface TwinCanvasProps {
   reading: Reading | null;
+  status: ConnectionStatus;
   /** Parent-owned ref that receives the imperative twin handle once initialised. */
   twinRef: MutableRefObject<TwinHandle | null>;
 }
@@ -15,7 +16,7 @@ interface HoverState {
   y: number;
 }
 
-export function TwinCanvas({ reading, twinRef }: TwinCanvasProps) {
+export function TwinCanvas({ reading, status, twinRef }: TwinCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hover, setHover] = useState<HoverState | null>(null);
 
@@ -24,6 +25,7 @@ export function TwinCanvas({ reading, twinRef }: TwinCanvasProps) {
     if (!canvasRef.current) return;
     const handle = initTwin(canvasRef.current, {
       variant: 'enviro',
+      wire: true,
       onHover: (label, x, y) => setHover(label ? { label, x, y } : null),
     });
     twinRef.current = handle;
@@ -38,6 +40,11 @@ export function TwinCanvas({ reading, twinRef }: TwinCanvasProps) {
   useEffect(() => {
     if (reading) twinRef.current?.setReadings(reading);
   }, [reading, twinRef]);
+
+  // mirror stream health into the 3D side: gray HUD + paused flows when stale
+  useEffect(() => {
+    twinRef.current?.setStale(status === 'stale' || status === 'error' || status === 'offline');
+  }, [status, twinRef]);
 
   return (
     <div className="twin-stage">
